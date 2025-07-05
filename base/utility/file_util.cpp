@@ -288,18 +288,38 @@ int CreateFile(const std::string &path, mode_t mode)
 int CopyFile(const std::string &src, const std::string &des)
 {
     std::ifstream fin(src, ios::binary);
-    std::ofstream fout(des, ios::binary);
     if (!fin.is_open()) {
         return -1;
     }
+
+    std::ofstream fout(des, ios::binary);
     if (!fout.is_open()) {
+        fin.close(); // 确保输入文件被关闭
         return -1;
     }
-    fout << fin.rdbuf();
-    if (fout.fail()) {
-        fout.clear();
+
+    try {
+        fout << fin.rdbuf();
+        if (fout.fail()) {
+            fout.clear();
+            fin.close();
+            fout.close();
+            return -1;
+        }
+        fout.flush();
+        if (fout.fail()) {
+            fin.close();
+            fout.close();
+            return -1;
+        }
+    } catch (const std::exception& e) {
+        fin.close();
+        fout.close();
+        return -1;
     }
-    fout.flush();
+
+    fin.close();
+    fout.close();
     return 0;
 }
 
@@ -309,25 +329,53 @@ int CopyFileFast(const std::string &src, const std::string &des)
     if (fdIn < 0) {
         return -1;
     }
+
     int fdOut = open(des.c_str(), O_CREAT | O_RDWR, 0664);
     if (fdOut < 0) {
-        close(fdIn);
+        if (close(fdIn) != 0) {
+            // 记录关闭失败，但不影响返回值
+        }
         return -1;
     }
+
     struct stat st;
-    uint64_t totalLen = stat(src.c_str(), &st) ? 0 : static_cast<uint64_t>(st.st_size);
+    if (stat(src.c_str(), &st) != 0) {
+        if (close(fdIn) != 0) {
+            // 记录关闭失败
+        }
+        if (close(fdOut) != 0) {
+            // 记录关闭失败
+        }
+        return -1;
+    }
+
+    uint64_t totalLen = static_cast<uint64_t>(st.st_size);
     uint64_t copyTotalLen = 0;
+
     while (copyTotalLen < totalLen) {
         ssize_t copyLen = sendfile(fdOut, fdIn, nullptr, totalLen - copyTotalLen);
         if (copyLen <= 0) {
-            break;
+            if (errno == EINTR) {
+                continue; // 被信号中断，重试
+            }
+            break; // 其他错误，退出循环
         }
         copyTotalLen += static_cast<uint64_t>(copyLen);
     }
-    close(fdIn);
-    close(fdOut);
-    int ret = copyTotalLen == totalLen ? 0 : -1;
-    return ret;
+
+    // 确保数据写入磁盘
+    if (fsync(fdOut) != 0) {
+        // 同步失败，但继续关闭文件描述符
+    }
+
+    int closeInResult = close(fdIn);
+    int closeOutResult = close(fdOut);
+
+    // 检查是否所有数据都被复制以及文件描述符是否成功关闭
+    bool copySuccess = (copyTotalLen == totalLen);
+    bool closeSuccess = (closeInResult == 0 && closeOutResult == 0);
+
+    return (copySuccess && closeSuccess) ? 0 : -1;
 }
 
 bool IsDirectory(const std::string &path)
