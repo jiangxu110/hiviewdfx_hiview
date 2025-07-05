@@ -18,12 +18,17 @@
 #include <vector>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
+#include <thread>
 #include "ITask.h"
 
 namespace OHOS {
 namespace HiviewDFX {
 class ThrTaskContainer {
 public:
+    ThrTaskContainer() : shouldStop_(false), isRunning_(false) {}
+    ~ThrTaskContainer();
+
     void StartLoop(const std::string& threadName);
     void StopLoop();
     void PostTask(ITask* task);
@@ -31,11 +36,15 @@ public:
 
 private:
     bool IsTaskOverLimit();
+    void CleanupTasks();
 
     const std::vector<ITask*>::size_type maxTaskSize = 50;
     std::vector<ITask*> tasks;
     std::mutex mut;
     std::condition_variable cv;
+    std::atomic<bool> shouldStop_;
+    std::atomic<bool> isRunning_;
+    std::unique_ptr<std::thread> workerThread_;
 };
 } // HiviewDFX
 } // OHOS
